@@ -1,30 +1,25 @@
-# Avril Executive Academy - Strategy & M&A
+# Strategy & M&A Academy
 
-Projet Streamlit autonome pour un parcours de formation en stratégie, finance corporate et M&A.
+Application Streamlit de formation : 10 modules (stratégie, finance, valorisation, M&A, décision COMEX), 29 exercices corrigés, 50 questions de quiz, 8 laboratoires interactifs, simulateur d'entretien et coach de recommandation.
 
-## Lancer localement
-
+## Lancer en local
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Contenu
-- 10 modules
-- cas pratiques fictifs
-- quiz et moteur de notation
-- simulateur de valorisation
-- coach COMEX fondé sur des critères explicites
-- export/import JSON de la progression
+## Déployer sur Streamlit Community Cloud
+Repository : ce dépôt · Branch : `main` · Main file path : `app.py`
 
-## Structure
-- `app.py` : interface et navigation
-- `content.py` : contenus pédagogiques
-- `scoring.py` : moteur de notation
-- `.streamlit/config.toml` : thème
+## Fichiers
+| Fichier | Rôle |
+|---|---|
+| `app.py` | Interface et navigation |
+| `content.py`, `content_a.py`, `content_b.py`, `content_c.py` | Cours, exemples, exercices, quiz, glossaire, entretien |
+| `finance.py` | Fonctions financières (VAN, TRI, DCF, EV → Equity…) |
+| `labs.py` | Laboratoires interactifs |
+| `scoring.py` | Moteur de notation |
+| `ui.py` | Habillage visuel |
+| `.streamlit/config.toml` | Thème (dossier `.streamlit` à la racine du dépôt) |
 
-## Confidentialité
-L'application ne fait aucun appel réseau applicatif et n'envoie pas les réponses à un service tiers. Les cas sont synthétiques et pédagogiques.
+Cas, chiffres et hypothèses : **fictifs et pédagogiques**. Aucune donnée interne n'est embarquée.
