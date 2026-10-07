@@ -6,10 +6,11 @@ import json
 import plotly.graph_objects as go
 import streamlit as st
 
+import ai
 import labs
 import ui
 from content import GLOSSARY, INTERVIEW, MODULES, PLAN
-from scoring import (AXES, PASS_THRESHOLD, axis_scores, coach_text, global_score, interview_score,
+from scoring import (AXES, COACH_CRITERIA, PASS_THRESHOLD, axis_scores, coach_text, global_score, interview_score,
                      module_scores, numeric_check, passed_count, quiz_grade)
 
 st.set_page_config(page_title="Strategy & M&A Academy", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -19,6 +20,7 @@ BY_ID = {m["id"]: m for m in MODULES}
 NAV_KEYS = ["home"] + [f"m{m['id']}" for m in MODULES] + ["lab", "interview", "glossary", "bilan"]
 NAV_STATIC = {"home": "Accueil", "lab": "Laboratoire", "interview": "Entretien & coach",
               "glossary": "Glossaire", "bilan": "Bilan & attestation"}
+KEEP_ON_RESET = ("nav", "ai_calls", "ai_consent_ok")
 
 
 def init_state() -> None:
@@ -29,6 +31,7 @@ def init_state() -> None:
     ss.setdefault("iv", {})
     ss.setdefault("iv_idx", 0)
     ss.setdefault("coach_saved", "")
+    ss.setdefault("ai_scores", {})
 
 
 def entry(mid: int) -> dict:
@@ -61,9 +64,10 @@ def sidebar() -> None:
         ui.sidebar_brand(round(100 * n_ok / len(MODULES)), f"{n_ok}/{len(MODULES)} modules validés")
         st.radio("Navigation", NAV_KEYS, format_func=lambda k: nav_label(k, done_ids), key="nav", label_visibility="collapsed")
         st.divider()
+        st.caption(ai.status_caption())
         st.caption("La progression est conservée pendant votre session. Exportez-la pour la retrouver plus tard.")
-        payload = json.dumps({"version": 4, "prog": prog, "name": st.session_state["name"], "iv": st.session_state["iv"]},
-                             ensure_ascii=False, indent=2)
+        payload = json.dumps({"version": 5, "prog": prog, "name": st.session_state["name"], "iv": st.session_state["iv"],
+                              "ai_scores": st.session_state.get("ai_scores", {})}, ensure_ascii=False, indent=2)
         st.download_button("Exporter ma progression", payload, "progression_academy.json", "application/json")
         up = st.file_uploader("Importer une progression", type="json", key="uploader")
         if up is not None and st.button("Appliquer l'import"):
@@ -72,13 +76,14 @@ def sidebar() -> None:
                 st.session_state["prog"] = data.get("prog", {})
                 st.session_state["name"] = data.get("name", "")
                 st.session_state["iv"] = data.get("iv", {})
+                st.session_state["ai_scores"] = data.get("ai_scores", {})
                 st.success("Progression importée.")
                 st.rerun()
             except Exception:
                 st.error("Fichier invalide.")
         if st.button("Réinitialiser la progression"):
             for k in list(st.session_state.keys()):
-                if k not in ("nav",):
+                if k not in KEEP_ON_RESET:
                     del st.session_state[k]
             st.rerun()
 
@@ -107,7 +112,7 @@ def page_home() -> None:
     done_ex = sum(module_scores(prog.get(str(m["id"])), m)["ex_done"] for m in MODULES)
     tot_ex = sum(len(m["exercises"]) for m in MODULES)
     ui.hero("CORPORATE STRATEGY & M&A", "De l'expertise M&A à la stratégie groupe",
-            "Un parcours pratique en 10 modules : diagnostic stratégique, finance d'entreprise, valorisation, M&A et décision COMEX – avec cours, exemples chiffrés, exercices corrigés, quiz et simulateurs.",
+            "Un parcours pratique en 10 modules : diagnostic stratégique, finance d'entreprise, valorisation, M&A et décision COMEX – avec cours, exemples chiffrés, exercices corrigés, quiz, simulateurs et correction interactive par IA.",
             ["10 modules", "8 laboratoires", "50 questions de quiz", "10 questions d'entretien"], f"{g}%", "SCORE GLOBAL", f"{n_ok}/10 modules validés")
     ui.stats([("Modules validés", f"{n_ok}/10", f"seuil : quiz ≥ {PASS_THRESHOLD} % et 50 % des exercices"),
               ("Score moyen aux quiz", f"{avg_quiz}%", f"{len(quizzes)} quiz passés"),
@@ -127,7 +132,7 @@ def page_home() -> None:
             st.button(f"Commencer le module {m['id']} →", on_click=goto, args=(nxt,), type="primary")
         st.subheader("Comment utiliser cette académie")
         st.markdown("1. **Lisez** le cours (onglet *Cours*) puis l'**exemple chiffré**.\n"
-                    "2. **Traitez** les exercices – vérifiez vos calculs, puis consultez la correction.\n"
+                    "2. **Traitez** les exercices – vérifiez vos calculs, puis demandez une **correction interactive** (IA ou prompt Copilot).\n"
                     "3. **Passez le quiz** : au moins 70 % pour valider.\n"
                     "4. **Expérimentez** dans les laboratoires, puis **entraînez-vous** à l'entretien.")
     with c2:
@@ -173,7 +178,9 @@ def tab_exercises(m: dict) -> None:
     e.setdefault("ex_done", {})
     e.setdefault("ex_val", {})
     e.setdefault("ex_text", {})
-    st.markdown("Traitez chaque exercice **avant** d'ouvrir la correction. Les exercices chiffrés se valident automatiquement ; les exercices rédactionnels se valident par auto-évaluation.")
+    st.markdown("Traitez chaque exercice **avant** d'ouvrir la correction. Les exercices chiffrés se valident automatiquement ; "
+                "les exercices rédactionnels se valident par auto-évaluation. La **correction interactive par IA** est un complément : "
+                "la validation reste fondée sur le calcul ou sur votre auto-évaluation.")
     first_todo = next((j for j in range(len(m["exercises"])) if not e["ex_done"].get(str(j))), -1)
     for i, ex in enumerate(m["exercises"]):
         k = str(i)
@@ -194,6 +201,10 @@ def tab_exercises(m: dict) -> None:
                         st.error("Pas tout à fait. Relisez l'indice ou la correction, puis réessayez.")
                 if done:
                     st.success(e.pop("flash", "Exercice validé."))
+                ai_answer = f"{val:.2f} {chk['unit']}".strip()
+                ai_kind = "numeric"
+                ai_extra = f"VALEUR ATTENDUE : {chk['answer']:.2f} {chk['unit']} (tolérance ±{chk['tol']})"
+                ai_label = "Expliquer mon calcul"
             else:
                 txt = st.text_area("Votre réponse (brouillon)", value=e["ex_text"].get(k, ""), height=150, key=f"ext_{m['id']}_{i}")
                 e["ex_text"][k] = txt
@@ -201,6 +212,9 @@ def tab_exercises(m: dict) -> None:
                 if ok != done:
                     e["ex_done"][k] = ok
                     st.rerun()
+                ai_answer, ai_kind, ai_extra, ai_label = txt, "open", "", "Corriger avec l'IA"
+            ai.panel(scope=f"ex_{m['id']}_{i}", kind=ai_kind, task=ex["statement"], reference=ex["solution"],
+                     user_answer=ai_answer, extra=ai_extra, button_label=ai_label)
             with st.expander("Indice"):
                 st.markdown(ex["hint"])
             with st.expander("Correction détaillée"):
@@ -289,8 +303,8 @@ def page_lab() -> None:
 
 def page_interview() -> None:
     ui.hero("ENTRETIEN & COACHING", "Entraînez-vous à convaincre",
-            "Répondez comme devant un Directeur Stratégie : recommandation d'abord, trois arguments, risque principal, conclusion. L'évaluation s'appuie sur des critères explicites et ne remplace pas une revue humaine.",
-            ["10 questions", "Coach COMEX", "Réponses modèles"])
+            "Répondez comme devant un Directeur Stratégie : recommandation d'abord, trois arguments, risque principal, conclusion. L'évaluation par mots-clés est indicative ; la correction interactive par IA va plus loin sur la qualité du raisonnement.",
+            ["10 questions", "Coach COMEX", "Correction IA"])
     t1, t2 = st.tabs(["Simulateur d'entretien", "Coach COMEX"])
     with t1:
         idx = st.session_state["iv_idx"] % len(INTERVIEW)
@@ -300,7 +314,7 @@ def page_interview() -> None:
         saved = st.session_state["iv"].get(str(idx), {})
         txt = st.text_area("Votre réponse (visez 90 secondes à l'oral, soit 150 à 200 mots)", value=saved.get("text", ""), height=220, key=f"iv_text_{idx}")
         c1, c2, c3 = st.columns([1, 1, 3])
-        if c1.button("Évaluer", type="primary", key=f"iv_eval_{idx}"):
+        if c1.button("Évaluer (mots-clés)", type="primary", key=f"iv_eval_{idx}"):
             r = interview_score(txt, q["expected"])
             st.session_state["iv"][str(idx)] = {"text": txt, "pct": r["pct"]}
             st.session_state[f"iv_res_{idx}"] = r
@@ -318,13 +332,16 @@ def page_interview() -> None:
                 st.info("Pistes à intégrer (mots-clés manquants) : " + " · ".join(missing))
         with st.expander("Voir une réponse modèle"):
             st.markdown(q["model"])
+        expected_txt = "\n".join(f"- Idée {n} : {', '.join(g)}" for n, g in enumerate(q["expected"], 1))
+        ai.panel(scope=f"iv_{idx}", kind="interview", task=q["q"], reference=q["model"], user_answer=txt,
+                 extra=expected_txt, button_label="Évaluer avec l'IA")
         scored = [v.get("pct") for v in st.session_state["iv"].values() if v.get("pct") is not None]
         if scored:
             st.caption(f"Questions travaillées : {len(scored)}/{len(INTERVIEW)} · couverture moyenne : {round(sum(scored) / len(scored))} %")
     with t2:
-        st.markdown("Collez une **recommandation** (executive summary, memo) : le coach vérifie la présence de sept dimensions attendues par un comité de décision.")
+        st.markdown("Collez une **recommandation** (executive summary, memo) : le coach vérifie la présence de sept dimensions attendues par un comité de décision, puis l'IA peut jouer un membre sceptique du comité.")
         txt = st.text_area("Votre recommandation", value=st.session_state["coach_saved"], height=260, key="coach_text_area")
-        if st.button("Challenger ma note", type="primary", key="coach_btn"):
+        if st.button("Challenger ma note (mots-clés)", type="primary", key="coach_btn"):
             st.session_state["coach_saved"] = txt
             r = coach_text(txt)
             st.progress(r["score"] / 100, text=f"Score de couverture : {r['score']} / 100 · {r['words']} mots")
@@ -335,6 +352,9 @@ def page_interview() -> None:
             missing = [c for c, ok in r["detail"].items() if not ok]
             if missing:
                 st.info("À renforcer : " + ", ".join(missing) + ".")
+        criteria_txt = "\n".join(f"- {c}" for c in COACH_CRITERIA)
+        ai.panel(scope="coach", kind="coach", task="Recommandation sur un cas fictif traité en formation (par exemple : JV internationale dans les protéines végétales).",
+                 reference=criteria_txt, user_answer=txt, button_label="Challenger avec l'IA")
 
 
 def page_glossary() -> None:
@@ -385,6 +405,12 @@ def page_bilan() -> None:
         rows.append({"Module": f"{m['id']:02d} · {m['title']}", "Axe": m["axis"], "Quiz": f"{s['quiz']} %" if s["quiz"] is not None else "—",
                      "Exercices": f"{s['ex_done']}/{s['ex_total']}", "Score": f"{s['total']} %", "Statut": "Validé" if s["passed"] else "En cours"})
     ui.md_table(rows)
+    ai_scores = st.session_state.get("ai_scores", {})
+    if ai_scores:
+        st.subheader("Notes indicatives de la correction IA")
+        st.caption("Ces notes sont données à titre indicatif et ne comptent pas dans le score global.")
+        ui.md_table([{"Exercice / séance": k.replace("ex_", "Exercice ").replace("iv_", "Entretien Q").replace("coach", "Coach COMEX"), "Note IA": f"{v} / 100"}
+                     for k, v in sorted(ai_scores.items())])
     st.subheader("Attestation")
     name = st.text_input("Nom à faire figurer", value=st.session_state["name"], key="name_input")
     st.session_state["name"] = name
